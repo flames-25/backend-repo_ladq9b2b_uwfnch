@@ -1,8 +1,13 @@
 import os
-from fastapi import FastAPI
+from typing import List, Optional
+from fastapi import FastAPI, HTTPException, Depends
 from fastapi.middleware.cors import CORSMiddleware
+from pydantic import BaseModel
 
-app = FastAPI()
+from database import db, create_document, get_documents
+from schemas import Profile as ProfileSchema, Project as ProjectSchema
+
+app = FastAPI(title="Portfolio API")
 
 app.add_middleware(
     CORSMiddleware,
@@ -12,58 +17,85 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-@app.get("/")
-def read_root():
-    return {"message": "Hello from FastAPI Backend!"}
+# Helper to get collection names from schema class name
 
-@app.get("/api/hello")
-def hello():
-    return {"message": "Hello from the backend API!"}
+def collection_name(model_cls: type) -> str:
+    return model_cls.__name__.lower()
+
+# Public endpoints (read-only)
+
+class ProfileOut(BaseModel):
+    name: str
+    title: str
+    summary: str
+    location: Optional[str] = None
+    email: Optional[str] = None
+    website: Optional[str] = None
+    github: Optional[str] = None
+    linkedin: Optional[str] = None
+    skills: List[str] = []
+
+class ProjectOut(BaseModel):
+    title: str
+    description: str
+    purpose: Optional[str] = None
+    languages: List[str] = []
+    frameworks: List[str] = []
+    timeframe: Optional[str] = None
+    repo_url: Optional[str] = None
+    live_url: Optional[str] = None
+    highlights: List[str] = []
+
+@app.get("/")
+def root():
+    return {"message": "Portfolio backend running"}
+
+@app.get("/api/profile", response_model=Optional[ProfileOut])
+def get_profile():
+    if db is None:
+        return None
+    docs = get_documents(collection_name(ProfileSchema), limit=1)
+    if not docs:
+        return None
+    doc = docs[0]
+    # Remove Mongo _id
+    doc.pop("_id", None)
+    return ProfileOut(**doc)
+
+@app.get("/api/projects", response_model=List[ProjectOut])
+def list_projects():
+    if db is None:
+        return []
+    docs = get_documents(collection_name(ProjectSchema))
+    for d in docs:
+        d.pop("_id", None)
+    return [ProjectOut(**d) for d in docs]
+
+# Simple owner-side endpoints to create content (no auth for demo; can add later)
+@app.post("/api/profile", response_model=str)
+def create_profile(profile: ProfileSchema):
+    cid = create_document(collection_name(ProfileSchema), profile)
+    return cid
+
+@app.post("/api/projects", response_model=str)
+def create_project(project: ProjectSchema):
+    cid = create_document(collection_name(ProjectSchema), project)
+    return cid
 
 @app.get("/test")
 def test_database():
-    """Test endpoint to check if database is available and accessible"""
     response = {
         "backend": "✅ Running",
-        "database": "❌ Not Available",
-        "database_url": None,
-        "database_name": None,
-        "connection_status": "Not Connected",
-        "collections": []
+        "database": "❌ Not Available" if db is None else "✅ Connected",
+        "database_url": "✅ Set" if os.getenv("DATABASE_URL") else "❌ Not Set",
+        "database_name": "✅ Set" if os.getenv("DATABASE_NAME") else "❌ Not Set",
     }
-    
     try:
-        # Try to import database module
-        from database import db
-        
         if db is not None:
-            response["database"] = "✅ Available"
-            response["database_url"] = "✅ Configured"
-            response["database_name"] = db.name if hasattr(db, 'name') else "✅ Connected"
-            response["connection_status"] = "Connected"
-            
-            # Try to list collections to verify connectivity
-            try:
-                collections = db.list_collection_names()
-                response["collections"] = collections[:10]  # Show first 10 collections
-                response["database"] = "✅ Connected & Working"
-            except Exception as e:
-                response["database"] = f"⚠️  Connected but Error: {str(e)[:50]}"
-        else:
-            response["database"] = "⚠️  Available but not initialized"
-            
-    except ImportError:
-        response["database"] = "❌ Database module not found (run enable-database first)"
+            response["collections"] = db.list_collection_names()
     except Exception as e:
-        response["database"] = f"❌ Error: {str(e)[:50]}"
-    
-    # Check environment variables
-    import os
-    response["database_url"] = "✅ Set" if os.getenv("DATABASE_URL") else "❌ Not Set"
-    response["database_name"] = "✅ Set" if os.getenv("DATABASE_NAME") else "❌ Not Set"
-    
+        response["database"] = f"⚠️ Error: {str(e)[:80]}"
     return response
-
 
 if __name__ == "__main__":
     import uvicorn
